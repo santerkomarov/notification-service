@@ -1,0 +1,294 @@
+openapi: 3.0.3
+info:
+  title: Notification Service API
+  version: 1.0.0
+  description: API микросервиса для массовой отправки Email/SMS-уведомлений.
+
+servers:
+  - url: http://localhost:8080/api
+    description: Локальное Docker-окружение
+
+paths:
+  /notifications/bulk:
+    post:
+      summary: Создать массовую рассылку уведомлений
+      description: Создаёт пакетную рассылку, записи уведомлений для выбранных подписчиков и публикует идентификаторы уведомлений в RabbitMQ.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Защищает от повторного создания одной и той же рассылки при дублировании запроса.
+          schema:
+            type: string
+            example: test-001
+        - name: Accept
+          in: header
+          required: false
+          description:
+          schema:
+            type: string
+            example: application/json
+      requestBody:
+        required: true
+        description: Данные для создания массовой рассылки.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkNotificationRequest'
+      responses:
+        '202':
+          description: Новая рассылка принята в обработку.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkNotificationResponse'
+        '200':
+          description: Возвращена уже существующая рассылка, так как был повторно использован тот же Idempotency-Key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkNotificationResponse'
+        '422':
+          description: Ошибка валидации входных данных.
+
+  /notification-batches/{batch}:
+    get:
+      summary: Получить статус пакетной рассылки
+      description: Возвращает основную информацию о рассылке и количество уведомлений в каждом статусе.
+      parameters:
+        - name: batch
+          in: path
+          required: true
+          description: UUID пакетной рассылки.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Информация о пакетной рассылке.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResourceResponse'
+        '404':
+          description: Пакетная рассылка не найдена.
+
+  /subscribers/{subscriber}/notifications:
+    get:
+      summary: Получить историю уведомлений подписчика
+      description: Возвращает список уведомлений конкретного подписчика с текущими статусами и данными о попытках отправки.
+      parameters:
+        - name: subscriber
+          in: path
+          required: true
+          description: ID подписчика.
+          schema:
+            type: integer
+            example: 1
+      responses:
+        '200':
+          description: История уведомлений подписчика.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriberNotificationsResponse'
+        '404':
+          description: Подписчик не найден.
+
+components:
+  schemas:
+    BulkNotificationRequest:
+      type: object
+      description: Запрос на создание массовой рассылки.
+      required:
+        - method
+        - priority
+        - message
+        - recipient_ids
+      properties:
+        method:
+          type: string
+          description: Метод отправки уведомления.
+          enum: [email, sms]
+          example: email
+        priority:
+          type: string
+          description: Приоритет обработки уведомлений. high обрабатывается раньше low.
+          enum: [high, low]
+          example: high
+        message:
+          type: string
+          description: Текст уведомления.
+          maxLength: 1000
+          example: Ваш заказ передан в доставку.
+        recipient_ids:
+          type: array
+          description: Список ID подписчиков, которым нужно отправить уведомление.
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: integer
+          example: [1, 2, 3]
+
+    BulkNotificationResponse:
+      type: object
+      description: Ответ после создания или повторного получения пакетной рассылки.
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+          description: UUID пакетной рассылки.
+          example: 0196f7c7-5c77-72ca-a4c5-4e1d19a9e795
+        status:
+          type: string
+          description: Результат обработки запроса.
+          enum: [accepted, already_accepted]
+          example: accepted
+        created:
+          type: boolean
+          description: true — создана новая рассылка; false — возвращена уже существующая.
+          example: true
+        created_notifications:
+          type: integer
+          description: Количество уведомлений в пакетной рассылке.
+          example: 3
+
+    BatchResourceResponse:
+      type: object
+      description: Ответ для пакетной рассылки.
+      properties:
+        data:
+          $ref: '#/components/schemas/Batch'
+
+    Batch:
+      type: object
+      description: Пакетная рассылка уведомлений.
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+          description: UUID пакетной рассылки.
+        method:
+          type: string
+          description: Метод отправки уведомлений.
+          enum: [email, sms]
+        priority:
+          type: string
+          description: Приоритет рассылки.
+          enum: [high, low]
+        message:
+          type: string
+          description: Текст уведомления.
+        total_count:
+          type: integer
+          description: Общее количество уведомлений в рассылке.
+        statuses:
+          $ref: '#/components/schemas/StatusCounts'
+        created_at:
+          type: string
+          format: date-time
+          description: Дата и время создания рассылки.
+
+    StatusCounts:
+      type: object
+      description: Количество уведомлений по статусам.
+      properties:
+        queued:
+          type: integer
+          description: Количество уведомлений, ожидающих обработки.
+          example: 0
+        sent:
+          type: integer
+          description: Количество уведомлений, переданных провайдеру.
+          example: 0
+        delivered:
+          type: integer
+          description: Количество доставленных уведомлений.
+          example: 2
+        dropped:
+          type: integer
+          description: Количество отброшенных уведомлений.
+          example: 1
+
+    SubscriberNotificationsResponse:
+      type: object
+      description: Ответ с историей уведомлений подписчика.
+      properties:
+        subscriber_id:
+          type: integer
+          description: ID подписчика.
+          example: 1
+        notifications:
+          type: object
+          description: Пагинированный список уведомлений.
+          properties:
+            data:
+              type: array
+              description: Список уведомлений.
+              items:
+                $ref: '#/components/schemas/Notification'
+
+    Notification:
+      type: object
+      description: Одно уведомление для конкретного подписчика.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID уведомления.
+        batch_id:
+          type: string
+          format: uuid
+          description: UUID пакетной рассылки.
+        subscriber_id:
+          type: integer
+          description: ID подписчика.
+        method:
+          type: string
+          description: Метод отправки уведомления.
+          enum: [email, sms]
+        priority:
+          type: string
+          description: Приоритет уведомления.
+          enum: [high, low]
+        message:
+          type: string
+          description: Текст уведомления.
+        status:
+          type: string
+          description: Текущий статус уведомления.
+          enum: [queued, sent, delivered, dropped]
+        provider_message_id:
+          type: string
+          nullable: true
+          description: ID сообщения у mock-провайдера.
+        error_message:
+          type: string
+          nullable: true
+          description: Текст ошибки, если уведомление не было доставлено или произошла временная ошибка.
+        attempts:
+          type: integer
+          description: Количество попыток отправки.
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Дата и время передачи уведомления провайдеру.
+        delivered_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Дата и время доставки уведомления.
+        dropped_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Дата и время отклонения уведомления.
+        created_at:
+          type: string
+          format: date-time
+          description: Дата и время создания уведомления.
+        updated_at:
+          type: string
+          format: date-time
+          description: Дата и время последнего обновления уведомления.

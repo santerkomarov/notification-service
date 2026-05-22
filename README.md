@@ -28,9 +28,11 @@
 ## Запуск
 
 ```
-git clone <url>
+git clone https://github.com/santerkomarov/notification-service.git
+
 cd <project folder>
 cp (copy) .env.example .env (при необходимости)
+
 docker compose up --build
 ```
 
